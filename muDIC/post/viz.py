@@ -2,6 +2,7 @@ import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.animation as animation  # 确保导入 animation 模块
 from scipy.ndimage import map_coordinates
 from muDIC.elements.b_splines import BSplineSurface
 from muDIC.elements.q4 import Q4
@@ -432,6 +433,129 @@ class Visualizer(object):
                 plt.colorbar()
         plt.show()
 
+    def animation(self, field="displacement", component=(0, 0), start_frame=0, end_frame=None, quiverdisp=False, save_path=None, fps=10, cbar_lim=None, auto_cbar_lim=False, **kwargs):
+        """
+        Animate the field variable across multiple frames.
+
+        Parameters
+        ----------
+        field : string
+            The name of the field to be shown. Valid inputs are:
+                "true strain"
+                "eng strain"
+                "disp"
+                "green strain"
+                "residual"
+        component : tuple with length 2
+            The components of the fields. Ex. (0,1).
+            In the case of vector fields, only the first index is used.
+        start_frame : Integer
+            The starting frame number of the animation.
+        end_frame : Integer or None
+            The ending frame number of the animation. If None, use the last available frame.
+        quiverdisp : bool
+            Whether to show the displacement quiver plot.
+        save_path : string or None
+            The path to save the animation. If None, just show the animation.
+        fps : Integer
+            Frames per second for the saved animation.
+        cbar_lim : tuple or None
+            The user-specified colorbar limits (lower, upper). If None, the colorbar limits are determined automatically.
+        auto_cbar_lim : bool
+            Whether to determine the colorbar limits based on all frame data. If True, cbar_lim will be ignored.
+        **kwargs : dict
+            Additional keyword arguments for the plot functions.
+        """
+        if end_frame is None:
+            if field == "residual":
+                end_frame = len(self.fields.__res__.Ic_stack)
+            else:
+                end_frame = self.fields.__F__.shape[-1]
+
+        fig = plt.figure()
+        ims = []
+
+        # 自动确定色条上下限
+        if auto_cbar_lim:
+            all_fvar = []
+            for frame in range(start_frame, end_frame):
+                keyword = field.replace(" ", "").lower()
+
+                if keyword == "truestrain":
+                    fvar = self.fields.true_strain()[0, component[0], component[1], :, :, frame]
+                elif keyword in ("F", "degrad", "deformationgradient"):
+                    fvar = self.fields.F()[0, component[0], component[1], :, :, frame]
+                elif keyword == "engstrain":
+                    fvar = self.fields.eng_strain()[0, component[0], component[1], :, :, frame]
+                elif keyword in ("displacement", "disp", "u"):
+                    fvar = self.fields.disp()[0, component[0], :, :, frame]
+                elif keyword in ("coordinates", "coords", "coord"):
+                    fvar = self.fields.coords()[0, component[0], :, :, frame]
+                elif keyword == "greenstrain":
+                    fvar = self.fields.green_strain()[0, component[0], component[1], :, :, frame]
+                elif keyword == "residual":
+                    fvar = self.fields.residual(frame)
+                else:
+                    self.logger.info("No valid field name was specified")
+                    continue
+
+                all_fvar.append(fvar)
+            all_fvar = np.concatenate([f.flat for f in all_fvar])
+            cbar_lim = (np.min(all_fvar), np.max(all_fvar))
+
+        def update(frame):
+            keyword = field.replace(" ", "").lower()
+
+            if keyword == "truestrain":
+                fvar = self.fields.true_strain()[0, component[0], component[1], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword in ("F", "degrad", "deformationgradient"):
+                fvar = self.fields.F()[0, component[0], component[1], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword == "engstrain":
+                fvar = self.fields.eng_strain()[0, component[0], component[1], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword in ("displacement", "disp", "u"):
+                fvar = self.fields.disp()[0, component[0], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword in ("coordinates", "coords", "coord"):
+                fvar = self.fields.coords()[0, component[0], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword == "greenstrain":
+                fvar = self.fields.green_strain()[0, component[0], component[1], :, :, frame]
+                xs, ys = self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame]
+            elif keyword == "residual":
+                fvar = self.fields.residual(frame)
+                xs, ys = self.fields.elm_coords(frame)
+            else:
+                self.logger.info("No valid field name was specified")
+                return
+
+            plt.clf()
+            if self.images:
+                n, m = self.images[frame].shape
+                plt.imshow(self.images[frame], cmap=plt.cm.gray, origin="lower", extent=(0, m, 0, n))
+
+            if quiverdisp:
+                plt.quiver(self.fields.coords()[0, 0, :, :, frame], self.fields.coords()[0, 1, :, :, frame],
+                           self.fields.disp()[0, 0, :, :, frame], self.fields.disp()[0, 1, :, :, frame], **kwargs)
+            else:
+                if np.ndim(fvar) == 2:
+                    contour = plt.contourf(xs, ys, fvar, 50, **kwargs)
+                    if cbar_lim:
+                        for collection in contour.collections:
+                            collection.set_clim(*cbar_lim)
+                    plt.colorbar()
+
+            plt.title(f"Frame {frame}")
+
+        ani = animation.FuncAnimation(fig, update, frames=range(start_frame, end_frame), interval=1000/fps)
+
+        if save_path:
+            ani.save(save_path, writer='ffmpeg', fps=fps)
+            self.logger.info(f"Animation saved to {save_path}")
+        else:
+            plt.show()
 
 def ind_closest_below(value, list):
     ind = 0
